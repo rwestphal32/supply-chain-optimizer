@@ -4,13 +4,13 @@ import pulp
 
 st.set_page_config(page_title="UK Supply Chain Optimizer", layout="wide")
 
-# --- CUSTOM STYLING ---
+# --- CUSTOM STYLING (FIXED LINE BELOW) ---
 st.markdown("""
     <style>
     .main { background-color: #f5f7f9; }
     .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     </style>
-    """, unsafe_allow_index=True)
+    """, unsafe_allow_html=True) # This was the line with the typo!
 
 st.title("🇬🇧 UK Strategic Network Design Tool")
 st.caption("A Value Creation Engine for Multi-Echelon Supply Chain Optimization")
@@ -35,6 +35,28 @@ if run_button:
         df_const = pd.read_excel(file_name, sheet_name='Constants').set_index('Parameter')
         df_dem = pd.read_excel(file_name, sheet_name='Demand').set_index('Year')
         df_sup = pd.read_excel(file_name, sheet_name='Suppliers').set_index('Supplier')
+        df_3pl = pd.read_excel(file_name, sheet_name='3PL_Nodes').set_index('DC_Location')
+        df_freight_in = pd.read_excel(file_name, sheet_name='Freight_Inbound').set_index('From')
+        df_freight_out = pd.read_excel(file_name, sheet_name='Freight_Outbound').set_index('From')
+        df_last_mile = pd.read_excel(file_name, sheet_name='Last_Mile').set_index('From')
+
+        # 2. OVERRIDE WITH SLIDERS
+        df_sup.at['Shenzhen_China', 'Tariff_Rate'] = sim_tariff
+        for f in df_freight_in.columns:
+            df_freight_in.at['Shenzhen_China', f] = sim_freight
+        df_dem = df_dem * sim_demand
+        PRICE = sim_price
+
+        # 3. SETUP OPTIMIZATION
+        WACC = df_const.loc['WACC', 'Value']
+        INFLATION = df_const.loc['Variable_Cost_Inflation', 'Value']
+        CAPEX_STD = df_const.loc['CAPEX_Std', 'Value']
+        CAPEX_MEGA = df_const.loc['CAPEX_Mega', 'Value']
+        years, sups, facs, dcs, regs = df_dem.index.tolist(), df_sup.index.tolist(), df_fac.index.tolist(), df_3pl.index.tolist(), df_dem.columns.tolist()
+
+        model = pulp.LpProblem("UK_SC_Model", pulp.LpMaximize)
+        build_fac = pulp.LpVariable.dicts("Build", ((f, y, s) for f in facs for y in years for s in ['Std', 'Mega']), cat='Binary')
+        open_dc = pulp.LpVariable.dicts("OpenDC", ((dc, y) for dc in dcs for y        df_sup = pd.read_excel(file_name, sheet_name='Suppliers').set_index('Supplier')
         df_3pl = pd.read_excel(file_name, sheet_name='3PL_Nodes').set_index('DC_Location')
         df_freight_in = pd.read_excel(file_name, sheet_name='Freight_Inbound').set_index('From')
         df_freight_out = pd.read_excel(file_name, sheet_name='Freight_Outbound').set_index('From')
