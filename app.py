@@ -8,7 +8,6 @@ st.title("🇬🇧 UK Strategic Network Design Tool")
 st.caption("A Value Creation Engine for Multi-Echelon Supply Chain Optimization")
 
 # --- SIDEBAR SCENARIO CONTROLS ---
-# Note: If you don't see this, click the '>' arrow in the top left!
 with st.sidebar:
     st.header("Global Levers")
     sim_tariff = st.slider("China Tariff Rate (%)", 0.0, 0.5, 0.20, 0.05)
@@ -18,7 +17,6 @@ with st.sidebar:
     sim_demand = st.slider("Demand Growth Multiplier", 0.5, 2.0, 1.0, 0.1)
     sim_price = st.slider("Unit Selling Price (£)", 1500, 3500, 2500, 100)
     
-    # This is the button you need to click!
     run_button = st.button("🚀 Re-Optimize Network", type="primary", use_container_width=True)
 
 if run_button:
@@ -115,9 +113,9 @@ if run_button:
             c1.metric("Project NPV", f"£{pulp.value(model.objective)/1000000:.1f}M")
             c2.metric("Total Revenue", f"£{t_rev/1000000:.1f}M")
             gm = t_rev - (t_mat + t_fin + t_fout + t_lm + t_3pl)
-            c3.metric("Gross Margin", f"{gm/t_rev*100:.1f}%")
+            c3.metric("Gross Margin", f"{gm/t_rev*100:.1f}%" if t_rev > 0 else "0.0%")
             ebitda = gm - (t_ffac + t_f3pl + (t_rev * 0.22))
-            c4.metric("True EBITDA", f"{ebitda/t_rev*100:.1f}%")
+            c4.metric("True EBITDA", f"{ebitda/t_rev*100:.1f}%" if t_rev > 0 else "0.0%")
 
             st.write("### Recommended Build Schedule")
             build_log = []
@@ -131,12 +129,30 @@ if run_button:
 
         with tab2:
             st.subheader("5-Year Cumulative Income Statement")
+            
+            # Create list of raw values
+            values = [t_rev, -t_mat, -t_fin, -t_fout, -t_3pl, -t_lm, gm, -t_ffac, -t_f3pl, -(t_rev*0.22), ebitda, -t_capex]
+            
+            # Calculate % of revenue (Handling divide by zero)
+            pct_rev = [(v / t_rev * 100) if t_rev > 0 else 0 for v in values]
+            
+            # Build DataFrame
             pl_data = {
                 "Item": ["Revenue", "Raw Materials & Tariffs", "Inbound Freight", "Outbound Freight", "3PL Handling", "Last Mile Delivery", "GROSS MARGIN", "Facility Fixed Costs", "3PL Fixed Costs", "Corporate OpEx (22%)", "TRUE EBITDA", "CAPEX"],
-                "Value (£)": [t_rev, -t_mat, -t_fin, -t_fout, -t_3pl, -t_lm, gm, -t_ffac, -t_f3pl, -(t_rev*0.22), ebitda, -t_capex]
+                "Value (£)": values,
+                "% of Revenue": pct_rev
             }
             df_pl = pd.DataFrame(pl_data)
-            st.dataframe(df_pl, use_container_width=True, hide_index=True)
+            
+            # Apply styling directly in Streamlit
+            st.dataframe(
+                df_pl.style.format({
+                    "Value (£)": "£{:,.0f}",
+                    "% of Revenue": "{:,.1f}%"
+                }), 
+                use_container_width=True, 
+                hide_index=True
+            )
 
         with tab3:
             st.subheader("Year 5 Operational Flow Map")
