@@ -4,18 +4,11 @@ import pulp
 
 st.set_page_config(page_title="UK Supply Chain Optimizer", layout="wide")
 
-# --- CUSTOM STYLING (FIXED LINE BELOW) ---
-st.markdown("""
-    <style>
-    .main { background-color: #f5f7f9; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    </style>
-    """, unsafe_allow_html=True) # This was the line with the typo!
-
 st.title("🇬🇧 UK Strategic Network Design Tool")
 st.caption("A Value Creation Engine for Multi-Echelon Supply Chain Optimization")
 
 # --- SIDEBAR SCENARIO CONTROLS ---
+# Note: If you don't see this, click the '>' arrow in the top left!
 with st.sidebar:
     st.header("Global Levers")
     sim_tariff = st.slider("China Tariff Rate (%)", 0.0, 0.5, 0.20, 0.05)
@@ -25,20 +18,25 @@ with st.sidebar:
     sim_demand = st.slider("Demand Growth Multiplier", 0.5, 2.0, 1.0, 0.1)
     sim_price = st.slider("Unit Selling Price (£)", 1500, 3500, 2500, 100)
     
+    # This is the button you need to click!
     run_button = st.button("🚀 Re-Optimize Network", type="primary", use_container_width=True)
 
 if run_button:
     with st.spinner("Solving Mixed-Integer Linear Program..."):
         # 1. LOAD DATA
         file_name = 'SC_Model_Data.xlsx'
-        df_fac = pd.read_excel(file_name, sheet_name='Facilities').set_index('Site')
-        df_const = pd.read_excel(file_name, sheet_name='Constants').set_index('Parameter')
-        df_dem = pd.read_excel(file_name, sheet_name='Demand').set_index('Year')
-        df_sup = pd.read_excel(file_name, sheet_name='Suppliers').set_index('Supplier')
-        df_3pl = pd.read_excel(file_name, sheet_name='3PL_Nodes').set_index('DC_Location')
-        df_freight_in = pd.read_excel(file_name, sheet_name='Freight_Inbound').set_index('From')
-        df_freight_out = pd.read_excel(file_name, sheet_name='Freight_Outbound').set_index('From')
-        df_last_mile = pd.read_excel(file_name, sheet_name='Last_Mile').set_index('From')
+        try:
+            df_fac = pd.read_excel(file_name, sheet_name='Facilities').set_index('Site')
+            df_const = pd.read_excel(file_name, sheet_name='Constants').set_index('Parameter')
+            df_dem = pd.read_excel(file_name, sheet_name='Demand').set_index('Year')
+            df_sup = pd.read_excel(file_name, sheet_name='Suppliers').set_index('Supplier')
+            df_3pl = pd.read_excel(file_name, sheet_name='3PL_Nodes').set_index('DC_Location')
+            df_freight_in = pd.read_excel(file_name, sheet_name='Freight_Inbound').set_index('From')
+            df_freight_out = pd.read_excel(file_name, sheet_name='Freight_Outbound').set_index('From')
+            df_last_mile = pd.read_excel(file_name, sheet_name='Last_Mile').set_index('From')
+        except Exception as e:
+            st.error(f"Error loading Excel file: {e}")
+            st.stop()
 
         # 2. OVERRIDE WITH SLIDERS
         df_sup.at['Shenzhen_China', 'Tariff_Rate'] = sim_tariff
@@ -56,35 +54,13 @@ if run_button:
 
         model = pulp.LpProblem("UK_SC_Model", pulp.LpMaximize)
         build_fac = pulp.LpVariable.dicts("Build", ((f, y, s) for f in facs for y in years for s in ['Std', 'Mega']), cat='Binary')
-        open_dc = pulp.LpVariable.dicts("OpenDC", ((dc, y) for dc in dcs for y        df_sup = pd.read_excel(file_name, sheet_name='Suppliers').set_index('Supplier')
-        df_3pl = pd.read_excel(file_name, sheet_name='3PL_Nodes').set_index('DC_Location')
-        df_freight_in = pd.read_excel(file_name, sheet_name='Freight_Inbound').set_index('From')
-        df_freight_out = pd.read_excel(file_name, sheet_name='Freight_Outbound').set_index('From')
-        df_last_mile = pd.read_excel(file_name, sheet_name='Last_Mile').set_index('From')
-
-        # 2. OVERRIDE WITH SLIDERS
-        df_sup.at['Shenzhen_China', 'Tariff_Rate'] = sim_tariff
-        for f in df_freight_in.columns:
-            df_freight_in.at['Shenzhen_China', f] = sim_freight
-        df_dem = df_dem * sim_demand
-        PRICE = sim_price
-
-        # 3. SETUP OPTIMIZATION (Same Logic as before)
-        WACC = df_const.loc['WACC', 'Value']
-        INFLATION = df_const.loc['Variable_Cost_Inflation', 'Value']
-        CAPEX_STD = df_const.loc['CAPEX_Std', 'Value']
-        CAPEX_MEGA = df_const.loc['CAPEX_Mega', 'Value']
-        years, sups, facs, dcs, regs = df_dem.index.tolist(), df_sup.index.tolist(), df_fac.index.tolist(), df_3pl.index.tolist(), df_dem.columns.tolist()
-
-        model = pulp.LpProblem("UK_SC_Model", pulp.LpMaximize)
-        build_fac = pulp.LpVariable.dicts("Build", ((f, y, s) for f in facs for y in years for s in ['Std', 'Mega']), cat='Binary')
         open_dc = pulp.LpVariable.dicts("OpenDC", ((dc, y) for dc in dcs for y in years), cat='Binary')
         flow_in = pulp.LpVariable.dicts("FlowIn", ((s, f, y) for s in sups for f in facs for y in years), lowBound=0)
         flow_out = pulp.LpVariable.dicts("FlowOut", ((f, dc, y) for f in facs for dc in dcs for y in years), lowBound=0)
         flow_last = pulp.LpVariable.dicts("FlowLast", ((dc, r, y) for dc in dcs for r in regs for y in years), lowBound=0)
         flow_unmet = pulp.LpVariable.dicts("Unmet", ((r, y) for r in regs for y in years), lowBound=0)
 
-        # Constraints & Solve...
+        # Constraints
         BIG_M = 1000000 
         for y in years:
             for r in regs:
@@ -160,7 +136,7 @@ if run_button:
                 "Value (£)": [t_rev, -t_mat, -t_fin, -t_fout, -t_3pl, -t_lm, gm, -t_ffac, -t_f3pl, -(t_rev*0.22), ebitda, -t_capex]
             }
             df_pl = pd.DataFrame(pl_data)
-            st.dataframe(df_pl.style.format({"Value (£)": "£{:,.0f}"}), use_container_width=True, hide_index=True)
+            st.dataframe(df_pl, use_container_width=True, hide_index=True)
 
         with tab3:
             st.subheader("Year 5 Operational Flow Map")
@@ -175,4 +151,4 @@ if run_button:
                                         flow_data.append({"Supplier": s, "Factory": f, "3PL DC": dc, "Region": r, "Units": int(flow_last[dc, r, 5].varValue)})
             st.dataframe(pd.DataFrame(flow_data), use_container_width=True)
 else:
-    st.info("👈 Adjust the sliders and click 'Re-Optimize' to generate the network plan.")
+    st.info("👈 Open the sidebar on the left and click 'Re-Optimize' to start.")
