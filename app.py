@@ -189,3 +189,30 @@ if run_button:
             st.subheader("5-Year Cumulative Income Statement")
             values = [t_rev, -t_mat, -t_fin, -t_fout, -t_hand, -t_lm, gm, -t_ffac, -t_fdc, -corp_opex, ebitda, -depreciation, ebit, -taxes, nopat, -t_capex]
             pct_rev = [(v / t_rev * 100) if t_rev > 0 else 0 for v in values]
+            pl_data = {
+                "Item": ["Revenue", "Raw Materials & Tariffs", "Inbound Freight", "Outbound Freight", "Handling (3PL + Owned)", "Last Mile Delivery", "GROSS MARGIN", "Factory Fixed Costs", "DC Fixed Costs (3PL + Owned)", "Corporate OpEx (22%)", "EBITDA", "Depreciation", "EBIT (Operating Profit)", "Taxes (25%)", "NOPAT (Net Operating Profit)", "CAPEX (Cash Outflow)"],
+                "Value (£)": values,
+                "% of Revenue": pct_rev
+            }
+            st.dataframe(pd.DataFrame(pl_data).style.format({"Value (£)": "£{:,.0f}", "% of Revenue": "{:,.1f}%"}), use_container_width=True, hide_index=True)
+
+        with tab3:
+            st.subheader("Year 5 Operational Flow Map")
+            flow_data = []
+            for s in sups:
+                for f in facs:
+                    if flow_in[s, f, 5].varValue > 0:
+                        for dc in dcs:
+                            vol_3pl = flow_last_3pl[dc, r, 5].varValue if flow_last_3pl[dc, r, 5].varValue else 0
+                            vol_own = flow_last_own[dc, r, 5].varValue if flow_last_own[dc, r, 5].varValue else 0
+                            if vol_3pl + vol_own > 0:
+                                for r in regs:
+                                    r_vol_3pl = flow_last_3pl[dc, r, 5].varValue if flow_last_3pl[dc, r, 5].varValue else 0
+                                    r_vol_own = flow_last_own[dc, r, 5].varValue if flow_last_own[dc, r, 5].varValue else 0
+                                    total_r_vol = r_vol_3pl + r_vol_own
+                                    if total_r_vol > 0:
+                                        strategy_type = "Owned DC" if r_vol_own > 0 else "3PL Contract"
+                                        flow_data.append({"Supplier": s, "Factory": f, "DC Node": f"{dc} ({strategy_type})", "Region": r, "Units": int(total_r_vol)})
+            st.dataframe(pd.DataFrame(flow_data), use_container_width=True)
+else:
+    st.info("👈 Open the sidebar on the left and click 'Re-Optimize' to start.")
