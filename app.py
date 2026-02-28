@@ -17,6 +17,13 @@ with st.sidebar:
     sim_demand = st.slider("Demand Growth Multiplier", 0.5, 2.0, 1.0, 0.1)
     sim_price = st.slider("Unit Selling Price (£)", 1500, 3500, 2500, 100)
     
+    st.header("Corporate Strategy")
+    strategy = st.radio("Distribution Strategy", [
+        "Optimize Mix (Owned + 3PL)", 
+        "100% Asset-Light (3PL Only)", 
+        "100% Asset-Heavy (Owned Only)"
+    ])
+    
     run_button = st.button("🚀 Re-Optimize Network", type="primary", use_container_width=True)
 
 if run_button:
@@ -52,68 +59,106 @@ if run_button:
         years, sups, facs, dcs, regs = df_dem.index.tolist(), df_sup.index.tolist(), df_fac.index.tolist(), df_3pl.index.tolist(), df_dem.columns.tolist()
 
         model = pulp.LpProblem("UK_SC_Model", pulp.LpMaximize)
-        build_fac = pulp.LpVariable.dicts("Build", ((f, y, s) for f in facs for y in years for s in ['Std', 'Mega']), cat='Binary')
-        open_dc = pulp.LpVariable.dicts("OpenDC", ((dc, y) for dc in dcs for y in years), cat='Binary')
+        
+        # Binaries
+        build_fac = pulp.LpVariable.dicts("BuildFac", ((f, y, s) for f in facs for y in years for s in ['Std', 'Mega']), cat='Binary')
+        open_dc_3pl = pulp.LpVariable.dicts("Open3PL", ((dc, y) for dc in dcs for y in years), cat='Binary')
+        build_dc_own = pulp.LpVariable.dicts("BuildOwnDC", ((dc, y) for dc in dcs for y in years), cat='Binary')
+        
+        # Continuous Flows
         flow_in = pulp.LpVariable.dicts("FlowIn", ((s, f, y) for s in sups for f in facs for y in years), lowBound=0)
         flow_out = pulp.LpVariable.dicts("FlowOut", ((f, dc, y) for f in facs for dc in dcs for y in years), lowBound=0)
-        flow_last = pulp.LpVariable.dicts("FlowLast", ((dc, r, y) for dc in dcs for r in regs for y in years), lowBound=0)
+        flow_last_3pl = pulp.LpVariable.dicts("FlowLast3PL", ((dc, r, y) for dc in dcs for r in regs for y in years), lowBound=0)
+        flow_last_own = pulp.LpVariable.dicts("FlowLastOwn", ((dc, r, y) for dc in dcs for r in regs for y in years), lowBound=0)
         flow_unmet = pulp.LpVariable.dicts("Unmet", ((r, y) for r in regs for y in years), lowBound=0)
 
         BIG_M = 1000000 
+        
+        # Strategic UI Overrides
+        if strategy == "100% Asset-Light (3PL Only)":
+            for dc in dcs:
+                for y in years:
+                    model += build_dc_own[dc, y] == 0
+        elif strategy == "100% Asset-Heavy (Owned Only)":
+            for dc in dcs:
+                for y in years:
+                    model += open_dc_3pl[dc, y] == 0
+
         for y in years:
             for r in regs:
-                model += pulp.lpSum([flow_last[dc, r, y] for dc in dcs]) + flow_unmet[r, y] == df_dem.loc[y, r]
+                model += pulp.lpSum([flow_last_3pl[dc, r, y] + flow_last_own[dc, r, y] for dc in dcs]) + flow_unmet[r, y] == df_dem.loc[y, r]
             for f in facs:
                 model += pulp.lpSum([flow_in[s, f, y] for s in sups]) == pulp.lpSum([flow_out[f, dc, y] for dc in dcs])
             for dc in dcs:
-                model += pulp.lpSum([flow_out[f, dc, y] for f in facs]) == pulp.lpSum([flow_last[dc, r, y] for r in regs])
-                model += pulp.lpSum([flow_last[dc, r, y] for r in regs]) <= open_dc[dc, y] * BIG_M
+                # DC Flow Balance
+                model += pulp.lpSum([flow_out[f, dc, y] for f in facs]) == pulp.lpSum([flow_last_3pl[dc, r, y] + flow_last_own[dc, r, y] for r in regs])
+                
+                # Flow locked to capacity/contracts
+                model += pulp.lpSum([flow_last_3pl[dc, r, y] for r in regs]) <= open_dc_3pl[dc, y] * BIG_M
+                model += pulp.lpSum([flow_last_own[dc, r, y] for r in regs]) <= pulp.lpSum([build_dc_own[dc, yb] for yb in years if yb <= y]) * BIG_M
+            
             for f in facs:
                 cap = pulp.lpSum([build_fac[f, yb, 'Std'] * df_fac.loc[f, 'Cap_Std'] + build_fac[f, yb, 'Mega'] * df_fac.loc[f, 'Cap_Mega'] for yb in years if yb <= y])
                 model += pulp.lpSum([flow_out[f, dc, y] for dc in dcs]) <= cap
+        
         for f in facs:
             model += pulp.lpSum([build_fac[f, y, sz] for y in years for sz in ['Std', 'Mega']]) <= 1
+        for dc in dcs:
+            model += pulp.lpSum([build_dc_own[dc, y] for y in years]) <= 1 # Can only build owned DC once
 
         discounted_cfs = []
         for y in years:
             inf = (1 + INFLATION)**(y - 1)
-            rev = pulp.lpSum([flow_last[dc, r, y] * PRICE for dc in dcs for r in regs])
+            rev = pulp.lpSum([(flow_last_3pl[dc, r, y] + flow_last_own[dc, r, y]) * PRICE for dc in dcs for r in regs])
             var_costs = (pulp.lpSum([flow_in[s, f, y] * (df_sup.loc[s, 'RM_Cost'] * (1 + df_sup.loc[s, 'Tariff_Rate'])) for s in sups for f in facs]) +
                          pulp.lpSum([flow_in[s, f, y] * (df_freight_in.loc[s, f] * df_sup.loc[s, 'Inbound_Multiplier']) for s in sups for f in facs]) +
                          pulp.lpSum([flow_out[f, dc, y] * df_freight_out.loc[f, dc] for f in facs for dc in dcs]) +
-                         pulp.lpSum([flow_last[dc, r, y] * (df_last_mile.loc[dc, r] + df_3pl.loc[dc, 'Variable_Handling_Cost']) for dc in dcs for r in regs])) * inf
+                         pulp.lpSum([(flow_last_3pl[dc, r, y] + flow_last_own[dc, r, y]) * df_last_mile.loc[dc, r] for dc in dcs for r in regs]) +
+                         pulp.lpSum([flow_last_3pl[dc, r, y] * df_3pl.loc[dc, 'Variable_Handling_Cost'] for dc in dcs for r in regs]) +
+                         pulp.lpSum([flow_last_own[dc, r, y] * df_3pl.loc[dc, 'Owned_Var_Handling'] for dc in dcs for r in regs])) * inf
+            
             unmet = pulp.lpSum([flow_unmet[r, y] * 5000 for r in regs])
-            fixed = pulp.lpSum([open_dc[dc, y] * df_3pl.loc[dc, 'Fixed_Cost'] for dc in dcs]) + pulp.lpSum([build_fac[f, yb, sz] * df_fac.loc[f, 'Fixed_Cost_Annual'] for f in facs for yb in years if yb <= y for sz in ['Std', 'Mega']])
-            capex = pulp.lpSum([build_fac[f, y, 'Std'] * CAPEX_STD + build_fac[f, y, 'Mega'] * CAPEX_MEGA for f in facs])
+            
+            fixed = pulp.lpSum([open_dc_3pl[dc, y] * df_3pl.loc[dc, 'Fixed_Cost'] for dc in dcs]) + \
+                    pulp.lpSum([build_dc_own[dc, yb] * df_3pl.loc[dc, 'Owned_Fixed_Cost'] for dc in dcs for yb in years if yb <= y]) + \
+                    pulp.lpSum([build_fac[f, yb, sz] * df_fac.loc[f, 'Fixed_Cost_Annual'] for f in facs for yb in years if yb <= y for sz in ['Std', 'Mega']])
+            
+            capex = pulp.lpSum([build_fac[f, y, 'Std'] * CAPEX_STD + build_fac[f, y, 'Mega'] * CAPEX_MEGA for f in facs]) + \
+                    pulp.lpSum([build_dc_own[dc, y] * df_3pl.loc[dc, 'Owned_CAPEX'] for dc in dcs])
+                    
             discounted_cfs.append((rev - var_costs - unmet - fixed - capex) / ((1 + WACC)**y))
 
         model += pulp.lpSum(discounted_cfs)
         model.solve()
 
         # --- FINANCIAL EXTRACTION ---
-        t_rev, t_mat, t_fin, t_fout, t_lm, t_3pl, t_ffac, t_f3pl, t_capex = 0,0,0,0,0,0,0,0,0
+        t_rev, t_mat, t_fin, t_fout, t_lm, t_hand, t_ffac, t_fdc, t_capex = 0,0,0,0,0,0,0,0,0
         for y in years:
             inf = (1 + INFLATION)**(y - 1)
-            t_rev += sum(flow_last[dc, r, y].varValue * PRICE for dc in dcs for r in regs)
+            t_rev += sum((flow_last_3pl[dc, r, y].varValue + flow_last_own[dc, r, y].varValue) * PRICE for dc in dcs for r in regs)
             t_mat += sum(flow_in[s, f, y].varValue * (df_sup.loc[s, 'RM_Cost'] * (1 + df_sup.loc[s, 'Tariff_Rate'])) for s in sups for f in facs) * inf
             t_fin += sum(flow_in[s, f, y].varValue * (df_freight_in.loc[s, f] * df_sup.loc[s, 'Inbound_Multiplier']) for s in sups for f in facs) * inf
             t_fout += sum(flow_out[f, dc, y].varValue * df_freight_out.loc[f, dc] for f in facs for dc in dcs) * inf
-            t_lm += sum(flow_last[dc, r, y].varValue * df_last_mile.loc[dc, r] for dc in dcs for r in regs) * inf
-            t_3pl += sum(flow_last[dc, r, y].varValue * df_3pl.loc[dc, 'Variable_Handling_Cost'] for dc in dcs for r in regs) * inf
+            t_lm += sum((flow_last_3pl[dc, r, y].varValue + flow_last_own[dc, r, y].varValue) * df_last_mile.loc[dc, r] for dc in dcs for r in regs) * inf
+            
+            t_hand += sum(flow_last_3pl[dc, r, y].varValue * df_3pl.loc[dc, 'Variable_Handling_Cost'] for dc in dcs for r in regs) * inf
+            t_hand += sum(flow_last_own[dc, r, y].varValue * df_3pl.loc[dc, 'Owned_Var_Handling'] for dc in dcs for r in regs) * inf
+            
             t_ffac += sum(build_fac[f, yb, sz].varValue * df_fac.loc[f, 'Fixed_Cost_Annual'] for f in facs for yb in years if yb <= y for sz in ['Std', 'Mega'])
-            t_f3pl += sum(open_dc[dc, y].varValue * df_3pl.loc[dc, 'Fixed_Cost'] for dc in dcs)
+            t_fdc += sum(open_dc_3pl[dc, y].varValue * df_3pl.loc[dc, 'Fixed_Cost'] for dc in dcs)
+            t_fdc += sum(build_dc_own[dc, yb].varValue * df_3pl.loc[dc, 'Owned_Fixed_Cost'] for dc in dcs for yb in years if yb <= y)
+            
             t_capex += sum(build_fac[f, y, 'Std'].varValue * CAPEX_STD + build_fac[f, y, 'Mega'].varValue * CAPEX_MEGA for f in facs)
+            t_capex += sum(build_dc_own[dc, y].varValue * df_3pl.loc[dc, 'Owned_CAPEX'] for dc in dcs)
 
         # Advanced Financials
-        gm = t_rev - (t_mat + t_fin + t_fout + t_lm + t_3pl)
+        gm = t_rev - (t_mat + t_fin + t_fout + t_lm + t_hand)
         corp_opex = t_rev * 0.22
-        ebitda = gm - (t_ffac + t_f3pl + corp_opex)
-        depreciation = t_capex # Assuming 100% depreciation over 5 years for simplicity
+        ebitda = gm - (t_ffac + t_fdc + corp_opex)
+        depreciation = t_capex
         ebit = ebitda - depreciation
         taxes = ebit * TAX_RATE if ebit > 0 else 0
         nopat = ebit - taxes
-        
-        # Return on Invested Capital (ROIC)
         roic = (nopat / t_capex * 100) if t_capex > 0 else 0
 
         # --- UI TABS ---
@@ -127,50 +172,20 @@ if run_button:
             c3.metric("True EBITDA", f"{ebitda/t_rev*100:.1f}%" if t_rev > 0 else "0.0%")
             c4.metric("ROIC (Project ROI)", f"{roic:.1f}%" if t_capex > 0 else "N/A")
 
-            st.write("### Recommended Build Schedule")
-            build_log = []
-            for f in facs:
-                for y in years:
-                    for sz in ['Std', 'Mega']:
-                        if build_fac[f, y, sz].varValue == 1.0:
-                            build_log.append({"Year": y, "Site": f, "Type": sz, "Capacity": df_fac.loc[f, f'Cap_{sz}']})
-            if build_log: st.table(pd.DataFrame(build_log))
-            else: st.warning("No facility construction recommended for this scenario.")
+            colA, colB = st.columns(2)
+            with colA:
+                st.write("### Factory Build Schedule")
+                fac_log = [{"Year": y, "Site": f, "Type": sz} for f in facs for y in years for sz in ['Std', 'Mega'] if build_fac[f, y, sz].varValue == 1.0]
+                if fac_log: st.table(pd.DataFrame(fac_log))
+                else: st.warning("No factories built.")
+            
+            with colB:
+                st.write("### Owned DC Build Schedule")
+                dc_log = [{"Year": y, "Distribution Center": dc} for dc in dcs for y in years if build_dc_own[dc, y].varValue == 1.0]
+                if dc_log: st.table(pd.DataFrame(dc_log))
+                else: st.info("Asset-Light Strategy Maintained (No DCs Built).")
 
         with tab2:
             st.subheader("5-Year Cumulative Income Statement")
-            
-            # Create list of raw values
-            values = [t_rev, -t_mat, -t_fin, -t_fout, -t_3pl, -t_lm, gm, -t_ffac, -t_f3pl, -corp_opex, ebitda, -depreciation, ebit, -taxes, nopat, -t_capex]
+            values = [t_rev, -t_mat, -t_fin, -t_fout, -t_hand, -t_lm, gm, -t_ffac, -t_fdc, -corp_opex, ebitda, -depreciation, ebit, -taxes, nopat, -t_capex]
             pct_rev = [(v / t_rev * 100) if t_rev > 0 else 0 for v in values]
-            
-            pl_data = {
-                "Item": ["Revenue", "Raw Materials & Tariffs", "Inbound Freight", "Outbound Freight", "3PL Handling", "Last Mile Delivery", "GROSS MARGIN", "Facility Fixed Costs", "3PL Fixed Costs", "Corporate OpEx (22%)", "EBITDA", "Depreciation", "EBIT (Operating Profit)", "Taxes (25%)", "NOPAT (Net Operating Profit)", "CAPEX (Cash Outflow)"],
-                "Value (£)": values,
-                "% of Revenue": pct_rev
-            }
-            df_pl = pd.DataFrame(pl_data)
-            
-            st.dataframe(
-                df_pl.style.format({
-                    "Value (£)": "£{:,.0f}",
-                    "% of Revenue": "{:,.1f}%"
-                }), 
-                use_container_width=True, 
-                hide_index=True
-            )
-
-        with tab3:
-            st.subheader("Year 5 Operational Flow Map")
-            flow_data = []
-            for s in sups:
-                for f in facs:
-                    if flow_in[s, f, 5].varValue > 0:
-                        for dc in dcs:
-                            if flow_out[f, dc, 5].varValue > 0:
-                                for r in regs:
-                                    if flow_last[dc, r, 5].varValue > 0:
-                                        flow_data.append({"Supplier": s, "Factory": f, "3PL DC": dc, "Region": r, "Units": int(flow_last[dc, r, 5].varValue)})
-            st.dataframe(pd.DataFrame(flow_data), use_container_width=True)
-else:
-    st.info("👈 Open the sidebar on the left and click 'Re-Optimize' to start.")
