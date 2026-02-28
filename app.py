@@ -48,6 +48,7 @@ if run_button:
         INFLATION = df_const.loc['Variable_Cost_Inflation', 'Value']
         CAPEX_STD = df_const.loc['CAPEX_Std', 'Value']
         CAPEX_MEGA = df_const.loc['CAPEX_Mega', 'Value']
+        TAX_RATE = df_const.loc['Tax Rate', 'Value']
         years, sups, facs, dcs, regs = df_dem.index.tolist(), df_sup.index.tolist(), df_fac.index.tolist(), df_3pl.index.tolist(), df_dem.columns.tolist()
 
         model = pulp.LpProblem("UK_SC_Model", pulp.LpMaximize)
@@ -58,7 +59,6 @@ if run_button:
         flow_last = pulp.LpVariable.dicts("FlowLast", ((dc, r, y) for dc in dcs for r in regs for y in years), lowBound=0)
         flow_unmet = pulp.LpVariable.dicts("Unmet", ((r, y) for r in regs for y in years), lowBound=0)
 
-        # Constraints
         BIG_M = 1000000 
         for y in years:
             for r in regs:
@@ -104,6 +104,18 @@ if run_button:
             t_f3pl += sum(open_dc[dc, y].varValue * df_3pl.loc[dc, 'Fixed_Cost'] for dc in dcs)
             t_capex += sum(build_fac[f, y, 'Std'].varValue * CAPEX_STD + build_fac[f, y, 'Mega'].varValue * CAPEX_MEGA for f in facs)
 
+        # Advanced Financials
+        gm = t_rev - (t_mat + t_fin + t_fout + t_lm + t_3pl)
+        corp_opex = t_rev * 0.22
+        ebitda = gm - (t_ffac + t_f3pl + corp_opex)
+        depreciation = t_capex # Assuming 100% depreciation over 5 years for simplicity
+        ebit = ebitda - depreciation
+        taxes = ebit * TAX_RATE if ebit > 0 else 0
+        nopat = ebit - taxes
+        
+        # Return on Invested Capital (ROIC)
+        roic = (nopat / t_capex * 100) if t_capex > 0 else 0
+
         # --- UI TABS ---
         tab1, tab2, tab3 = st.tabs(["📊 Executive Summary", "💰 Detailed P&L", "🚚 Network Flow"])
 
@@ -111,11 +123,9 @@ if run_button:
             st.subheader("Key Performance Indicators")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Project NPV", f"£{pulp.value(model.objective)/1000000:.1f}M")
-            c2.metric("Total Revenue", f"£{t_rev/1000000:.1f}M")
-            gm = t_rev - (t_mat + t_fin + t_fout + t_lm + t_3pl)
-            c3.metric("Gross Margin", f"{gm/t_rev*100:.1f}%" if t_rev > 0 else "0.0%")
-            ebitda = gm - (t_ffac + t_f3pl + (t_rev * 0.22))
-            c4.metric("True EBITDA", f"{ebitda/t_rev*100:.1f}%" if t_rev > 0 else "0.0%")
+            c2.metric("Gross Margin", f"{gm/t_rev*100:.1f}%" if t_rev > 0 else "0.0%")
+            c3.metric("True EBITDA", f"{ebitda/t_rev*100:.1f}%" if t_rev > 0 else "0.0%")
+            c4.metric("ROIC (Project ROI)", f"{roic:.1f}%" if t_capex > 0 else "N/A")
 
             st.write("### Recommended Build Schedule")
             build_log = []
@@ -131,20 +141,16 @@ if run_button:
             st.subheader("5-Year Cumulative Income Statement")
             
             # Create list of raw values
-            values = [t_rev, -t_mat, -t_fin, -t_fout, -t_3pl, -t_lm, gm, -t_ffac, -t_f3pl, -(t_rev*0.22), ebitda, -t_capex]
-            
-            # Calculate % of revenue (Handling divide by zero)
+            values = [t_rev, -t_mat, -t_fin, -t_fout, -t_3pl, -t_lm, gm, -t_ffac, -t_f3pl, -corp_opex, ebitda, -depreciation, ebit, -taxes, nopat, -t_capex]
             pct_rev = [(v / t_rev * 100) if t_rev > 0 else 0 for v in values]
             
-            # Build DataFrame
             pl_data = {
-                "Item": ["Revenue", "Raw Materials & Tariffs", "Inbound Freight", "Outbound Freight", "3PL Handling", "Last Mile Delivery", "GROSS MARGIN", "Facility Fixed Costs", "3PL Fixed Costs", "Corporate OpEx (22%)", "TRUE EBITDA", "CAPEX"],
+                "Item": ["Revenue", "Raw Materials & Tariffs", "Inbound Freight", "Outbound Freight", "3PL Handling", "Last Mile Delivery", "GROSS MARGIN", "Facility Fixed Costs", "3PL Fixed Costs", "Corporate OpEx (22%)", "EBITDA", "Depreciation", "EBIT (Operating Profit)", "Taxes (25%)", "NOPAT (Net Operating Profit)", "CAPEX (Cash Outflow)"],
                 "Value (£)": values,
                 "% of Revenue": pct_rev
             }
             df_pl = pd.DataFrame(pl_data)
             
-            # Apply styling directly in Streamlit
             st.dataframe(
                 df_pl.style.format({
                     "Value (£)": "£{:,.0f}",
