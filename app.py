@@ -44,23 +44,20 @@ def generate_rich_template():
     return output.getvalue()
 
 # --- 2. HEADER ---
-st.title("🇬🇧 UK Strategic Network: C-Suite Architect")
-st.markdown("**Objective:** A path-based MILP solver optimizing multi-echelon network flows, CAPEX timing, and providing GAAP-aligned YoY Financial Statements.")
+st.title("🇬🇧 UK Strategic Network: Fully Burdened Architect")
+st.markdown("**Objective:** Shift from tactical 'Contribution Margin' to strategic **'Fully Burdened ROIC'**. Evaluates lanes not just on variable freight, but on their allocated share of fixed overhead and infrastructure CAPEX depreciation.")
 
 # --- 3. SIDEBAR ---
 with st.sidebar:
     st.header("📥 Data Management")
     st.download_button("📥 Download Network Data", data=generate_rich_template(), file_name="Network_Specs.xlsx")
     uploaded_file = st.file_uploader("Upload Specs (.xlsx)", type=["xlsx"])
-    
     st.header("🏢 Corporate Strategy")
     strategy = st.radio("Asset Policy", ["Optimize Mix", "3PL Only", "Owned Only"])
     service_mode = st.radio("Commercial Policy", ["Capture All Demand", "Profit Max (Rationalize)"])
-    
     st.header("🔄 Reverse Logistics")
     sim_returns = st.slider("Global Returns (%)", 0, 30, 8) / 100.0
     sim_refurb = st.slider("Refurb Cost (£/unit)", 50, 500, 150)
-    
     run_button = st.button("🚀 Run C-Suite Optimizer", type="primary", use_container_width=True)
 
 # --- 4. SOLVER ENGINE ---
@@ -110,7 +107,7 @@ if run_button:
             model += pulp.lpSum([p_3pl[(s, f, d, r, y)] for s in sups for f in facs for r in regs]) <= open_3pl[(d, y)] * 1e7
             model += pulp.lpSum([p_own[(s, f, d, r, y)] for s in sups for f in facs for r in regs]) <= pulp.lpSum([build_own[(d, yb)] for yb in years if yb <= y]) * 1e7
 
-    # NPV & FINANCIAL ENGINE
+    # NPV FINANCIAL ENGINE
     cfs = []
     for y in years:
         inf = (1 + df_const.loc['Variable_Cost_Inflation', 'Value'])**(y-1)
@@ -119,8 +116,7 @@ if run_button:
             for f in facs:
                 for d in dcs:
                     for r in regs:
-                        v_3 = p_3pl[(s, f, d, r, y)]
-                        v_o = p_own[(s, f, d, r, y)]
+                        v_3, v_o = p_3pl[(s, f, d, r, y)], p_own[(s, f, d, r, y)]
                         base_cost = (df_sup.loc[s, 'RM_Cost']*1.2 + df_f_in.loc[s, f] + df_f_out.loc[f, d] + df_last.loc[d, r])
                         rev_leak = sim_returns * (df_last.loc[d, r] + sim_refurb)
                         net_cash += (v_3 * (PRICE - (base_cost + df_3pl.loc[d, 'Variable_Handling_Cost'] + rev_leak)*inf)) + \
@@ -134,87 +130,120 @@ if run_button:
     model += pulp.lpSum(cfs)
     model.solve(pulp.PULP_CBC_CMD(msg=0))
 
-    # --- 5. FINANCIAL EXTRACTION FOR 5-YEAR P&L & ROIC ---
-    pl_data = {"Metric": ["Gross Revenue", "COGS (Product & Tariffs)", "Forward Logistics & Handling", "Reverse Logistics", "Fixed OPEX", "EBITDA", "Depreciation (10-Yr S.L.)", "EBIT", "Taxes (25%)", "NOPAT", "Invested CAPEX (Cumulative)", "ROIC (%)"]}
-    
-    total_npv = pulp.value(model.objective)
-    cum_capex = 0
-    avg_roic_sum = 0
-    roic_years = 0
+    # --- 5. FULLY BURDENED CFO AUDIT PREP ---
+    fac_vol = {y: {f: 0 for f in facs} for y in years}
+    dc_vol = {y: {d: 0 for d in dcs} for y in years}
     
     for y in years:
-        inf = (1 + df_const.loc['Variable_Cost_Inflation', 'Value'])**(y-1)
-        y_rev, y_cogs, y_fwd, y_rev_log = 0, 0, 0, 0
-        
         for s in sups:
             for f in facs:
                 for d in dcs:
                     for r in regs:
-                        v_3 = pulp.value(p_3pl[(s, f, d, r, y)])
-                        v_o = pulp.value(p_own[(s, f, d, r, y)])
-                        tv = v_3 + v_o
-                        
-                        y_rev += tv * PRICE
-                        y_cogs += tv * (df_sup.loc[s, 'RM_Cost'] * 1.2) * inf
-                        y_fwd += (tv * (df_f_in.loc[s, f] + df_f_out.loc[f, d] + df_last.loc[d, r]) + v_3 * df_3pl.loc[d, 'Variable_Handling_Cost'] + v_o * df_3pl.loc[d, 'Owned_Var_Handling']) * inf
-                        y_rev_log += tv * sim_returns * (df_last.loc[d, r] + sim_refurb) * inf
-        
-        y_fixed = sum([pulp.value(open_3pl[(d, y)]) * df_3pl.loc[d, 'Fixed_Cost'] + pulp.value(build_own[(d, y)]) * df_3pl.loc[d, 'Owned_Fixed_Cost'] for d in dcs]) + \
-                  sum([pulp.value(build_fac[(f, y, sz)]) * df_fac.loc[f, 'Fixed_Cost_Annual'] for f in facs for sz in ['Std', 'Mega'] for yb in years if yb <= y])
-                  
-        y_capex = sum([pulp.value(build_own[(d, y)]) * df_3pl.loc[d, 'Owned_CAPEX'] for d in dcs]) + \
-                  sum([pulp.value(build_fac[(f, y, sz)]) * (5e6 if sz=='Std' else 12e6) for f in facs for sz in ['Std', 'Mega']])
-        
-        cum_capex += y_capex
-        y_ebitda = y_rev - y_cogs - y_fwd - y_rev_log - y_fixed
-        y_depr = cum_capex * 0.10 # 10-year straight line assumption
-        y_ebit = y_ebitda - y_depr
-        y_tax = max(0, y_ebit * TAX_RATE)
-        y_nopat = y_ebit - y_tax
-        y_roic = (y_nopat / cum_capex * 100) if cum_capex > 0 else 0
-        
-        if cum_capex > 0:
-            avg_roic_sum += y_roic
-            roic_years += 1
+                        v = pulp.value(p_3pl[(s,f,d,r,y)]) + pulp.value(p_own[(s,f,d,r,y)])
+                        if v > 0:
+                            fac_vol[y][f] += v
+                            dc_vol[y][d] += v
 
-        pl_data[f"Year {y}"] = [y_rev, -y_cogs, -y_fwd, -y_rev_log, -y_fixed, y_ebitda, -y_depr, y_ebit, -y_tax, y_nopat, cum_capex, y_roic]
-        if y == 5: y5_margin = (y_ebitda / y_rev * 100) if y_rev > 0 else 0
+    ledger = []
+    for y in years:
+        for s in sups:
+            for f in facs:
+                # Factory Level Burden Math
+                is_fac_built = sum(pulp.value(build_fac[(f, yb, sz)]) for yb in years if yb <= y for sz in ['Std', 'Mega'])
+                fac_fixed_tot = df_fac.loc[f, 'Fixed_Cost_Annual'] if is_fac_built > 0 else 0
+                fac_capex_tot = sum(pulp.value(build_fac[(f, yb, 'Std')])*5e6 + pulp.value(build_fac[(f, yb, 'Mega')])*12e6 for yb in years if yb <= y)
+                fac_depr_tot = fac_capex_tot / 10.0 # 10 Year Straight Line
+                
+                u_fac_fix = fac_fixed_tot / fac_vol[y][f] if fac_vol[y][f] > 0 else 0
+                u_fac_depr = fac_depr_tot / fac_vol[y][f] if fac_vol[y][f] > 0 else 0
+                
+                for d in dcs:
+                    # DC Level Burden Math
+                    is_own_built = sum(pulp.value(build_own[(d, yb)]) for yb in years if yb <= y)
+                    is_3pl_open = pulp.value(open_3pl[(d, y)])
+                    
+                    dc_fixed_tot = (df_3pl.loc[d, 'Owned_Fixed_Cost'] if is_own_built > 0 else 0) + (df_3pl.loc[d, 'Fixed_Cost'] if is_3pl_open > 0 else 0)
+                    dc_capex_tot = sum(pulp.value(build_own[(d, yb)]) * df_3pl.loc[d, 'Owned_CAPEX'] for yb in years if yb <= y)
+                    dc_depr_tot = dc_capex_tot / 10.0
+                    
+                    u_dc_fix = dc_fixed_tot / dc_vol[y][d] if dc_vol[y][d] > 0 else 0
+                    u_dc_depr = dc_depr_tot / dc_vol[y][d] if dc_vol[y][d] > 0 else 0
 
-    df_pl = pd.DataFrame(pl_data)
-    avg_roic = (avg_roic_sum / roic_years) if roic_years > 0 else "Asset-Light"
+                    for r in regs:
+                        v3, vo = pulp.value(p_3pl[(s,f,d,r,y)]), pulp.value(p_own[(s,f,d,r,y)])
+                        total_v = v3 + vo
+                        if total_v > 0:
+                            hand_cost = ((v3 * df_3pl.loc[d, 'Variable_Handling_Cost']) + (vo * df_3pl.loc[d, 'Owned_Var_Handling'])) / total_v
+                            
+                            row = {
+                                "Year": y, "Supplier": s, "Factory": f, "DC": d, "Region": r, "Units": total_v, "Gross_Revenue": total_v * PRICE,
+                                "COGS_RM_Tariff": total_v * df_sup.loc[s, 'RM_Cost'] * 1.2,
+                                "Logistics_Inbound": total_v * df_f_in.loc[s, f],
+                                "Logistics_Outbound": total_v * df_f_out.loc[f, d],
+                                "Handling_Var": total_v * hand_cost,
+                                "Logistics_Last_Mile": total_v * df_last.loc[d, r],
+                                "Reverse_Logistics_Leakage": total_v * sim_returns * (df_last.loc[d, r] + sim_refurb)
+                            }
+                            
+                            # The Cascading Margin Logic
+                            row["Total_Variable_Cost"] = row["COGS_RM_Tariff"] + row["Logistics_Inbound"] + row["Logistics_Outbound"] + row["Handling_Var"] + row["Logistics_Last_Mile"] + row["Reverse_Logistics_Leakage"]
+                            row["1_Contribution_Margin"] = row["Gross_Revenue"] - row["Total_Variable_Cost"]
+                            
+                            row["Allocated_Factory_Fixed"] = total_v * u_fac_fix
+                            row["Allocated_DC_Fixed"] = total_v * u_dc_fix
+                            row["2_EBITDA"] = row["1_Contribution_Margin"] - row["Allocated_Factory_Fixed"] - row["Allocated_DC_Fixed"]
+                            
+                            row["Allocated_Factory_Depr"] = total_v * u_fac_depr
+                            row["Allocated_DC_Depr"] = total_v * u_dc_depr
+                            row["3_EBIT"] = row["2_EBITDA"] - row["Allocated_Factory_Depr"] - row["Allocated_DC_Depr"]
+                            
+                            row["Fully_Burdened_NOPAT"] = row["3_EBIT"] * (1 - TAX_RATE) if row["3_EBIT"] > 0 else row["3_EBIT"]
+                            
+                            ledger.append(row)
 
-    # --- 6. C-SUITE DASHBOARDS ---
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Strategy NPV", f"£{total_npv/1e6:.1f}M")
-    c2.metric("Total CAPEX Deployed", f"£{cum_capex/1e6:.1f}M")
-    c3.metric("Year 5 EBITDA Margin", f"{y5_margin:.1f}%")
-    c4.metric("Avg ROIC (Operating Years)", f"{avg_roic:.1f}%" if isinstance(avg_roic, float) else avg_roic)
-
-    t1, t2, t3, t4, t5 = st.tabs(["📋 5-Year Pro Forma P&L", "🏗️ CAPEX Schedule", "🚚 Volume Flow (Sankey)", "📍 Asset Utilization", "📥 CFO Audit Ledger"])
+    # --- 6. DASHBOARDS ---
+    t1, t2, t3, t4 = st.tabs(["📋 Fully Burdened CFO Ledger", "🏗️ Asset Utilization & Build", "🚚 Volume Flow (Sankey)", "📥 Excel Export"])
 
     with t1:
-        st.subheader("YoY Financial Statement & Margin Evolution")
-        # Format DataFrame specifically for presentation
-        styled_pl = df_pl.copy()
-        for y in years:
-            col = f"Year {y}"
-            styled_pl[col] = styled_pl.apply(lambda row: f"{row[col]:.1f}%" if row['Metric'] == 'ROIC (%)' else f"£{row[col]/1e6:,.2f}M", axis=1)
-        st.dataframe(styled_pl, hide_index=True, use_container_width=True)
+        st.subheader("Unit Economics: Contribution Margin vs. Fully Burdened Profit")
+        st.markdown("This validates whether an asset investment is truly accretive. If a region has a positive Contribution Margin but a negative Fully Burdened NOPAT, it is failing to pay for the CAPEX deployed to serve it.")
+        
+        # Grouping ledger for regional view
+        df_ledg = pd.DataFrame(ledger)
+        reg_summ = df_ledg.groupby("Region").agg({
+            "Units": "sum", "Gross_Revenue": "sum", "1_Contribution_Margin": "sum", "Fully_Burdened_NOPAT": "sum"
+        }).reset_index()
+        
+        reg_summ["Contribution Margin %"] = (reg_summ["1_Contribution_Margin"] / reg_summ["Gross_Revenue"] * 100).round(1)
+        reg_summ["True Net Margin (ROIC) %"] = (reg_summ["Fully_Burdened_NOPAT"] / reg_summ["Gross_Revenue"] * 100).round(1)
+        
+        st.dataframe(reg_summ[["Region", "Units", "Contribution Margin %", "True Net Margin (ROIC) %"]].sort_values("True Net Margin (ROIC) %", ascending=False),
+                     column_config={
+                         "Contribution Margin %": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100),
+                         "True Net Margin (ROIC) %": st.column_config.ProgressColumn(format="%d%%", min_value=-20, max_value=100)
+                     }, use_container_width=True)
 
     with t2:
-        st.subheader("Infrastructure CAPEX Timeline")
-        build_sched = []
-        for y in years:
-            for f in facs:
-                for sz in ['Std', 'Mega']:
-                    if pulp.value(build_fac[(f, y, sz)]) > 0.5: build_sched.append({"Year": y, "Asset": f, "Action": f"Build Factory ({sz})", "CAPEX": f"£{5 if sz=='Std' else 12}M"})
-            for d in dcs:
-                if pulp.value(build_own[(d, y)]) > 0.5: build_sched.append({"Year": y, "Asset": d, "Action": "Build Owned DC", "CAPEX": f"£{df_3pl.loc[d, 'Owned_CAPEX']/1e6:.1f}M"})
-                if pulp.value(open_3pl[(d, y)]) > 0.5: build_sched.append({"Year": y, "Asset": d, "Action": "Open 3PL Contract", "CAPEX": "£0M (OPEX)"})
-        st.table(pd.DataFrame(build_sched) if build_sched else pd.DataFrame([{"Status": "No Actions Taken"}]))
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("**Infrastructure Build Timeline**")
+            build_sched = [{"Year": y, "Asset": f if f else d, "Action": f"Build {sz} Factory" if f else "Build Owned DC"} for y in years for f in facs for sz in ['Std', 'Mega'] if pulp.value(build_fac[(f, y, sz)]) > 0.5] + \
+                          [{"Year": y, "Asset": d, "Action": "Build Owned DC"} for y in years for d in dcs if pulp.value(build_own[(d, y)]) > 0.5]
+            st.table(pd.DataFrame(build_sched) if build_sched else pd.DataFrame([{"Status": "Asset-Light Model"}]))
+            
+        with col2:
+            st.write("**Factory Utilization & Depreciation Risk**")
+            util_data = []
+            for y in years:
+                for f in facs:
+                    cap = sum([pulp.value(build_fac[(f, yb, 'Std')])*df_fac.loc[f, 'Cap_Std'] + pulp.value(build_fac[(f, yb, 'Mega')])*df_fac.loc[f, 'Cap_Mega'] for yb in years if yb <= y])
+                    if cap > 0:
+                        vol = fac_vol[y][f]
+                        util_data.append({"Year": y, "Site": f, "Utilized": int(vol), "Capacity": int(cap), "Utilization %": round(vol/cap*100, 1)})
+            st.dataframe(pd.DataFrame(util_data) if util_data else pd.DataFrame([{"Status": "No Factories Operating"}]), use_container_width=True)
 
     with t3:
-        st.subheader("Physical Unit Routing (5-Year Volume)")
+        st.subheader("Physical Unit Routing (5-Year Density)")
         nodes = sups + facs + dcs + regs; n_map = {n: i for i, n in enumerate(nodes)}
         s_idx, t_idx, v_val = [], [], []
         for s in sups:
@@ -232,41 +261,11 @@ if run_button:
         st.plotly_chart(go.Figure(data=[go.Sankey(node=dict(label=nodes, color="blue"), link=dict(source=s_idx, target=t_idx, value=v_val))]), use_container_width=True)
 
     with t4:
-        st.subheader("Factory Capacity Utilization (Risk View)")
-        util_data = []
-        for y in years:
-            for f in facs:
-                active_cap = sum([pulp.value(build_fac[(f, yb, 'Std')])*df_fac.loc[f, 'Cap_Std'] + pulp.value(build_fac[(f, yb, 'Mega')])*df_fac.loc[f, 'Cap_Mega'] for yb in years if yb <= y])
-                if active_cap > 0:
-                    flow = sum([pulp.value(p_3pl[(s,f,d,r,y)]) + pulp.value(p_own[(s,f,d,r,y)]) for s in sups for d in dcs for r in regs])
-                    util_data.append({"Year": y, "Factory": f, "Throughput": int(flow), "Capacity": int(active_cap), "Utilization %": round((flow/active_cap)*100, 1)})
-        if util_data: st.dataframe(pd.DataFrame(util_data), column_config={"Utilization %": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100)}, use_container_width=True)
-        else: st.write("No factories operating.")
-
-    with t5:
-        st.subheader("CFO Audit: Exact Multi-Echelon Ledger")
-        ledger = []
-        for y in years:
-            for s in sups:
-                for f in facs:
-                    for d in dcs:
-                        for r in regs:
-                            v3, vo = pulp.value(p_3pl[(s,f,d,r,y)]), pulp.value(p_own[(s,f,d,r,y)])
-                            total_v = v3 + vo
-                            if total_v > 0:
-                                hand_cost = ((v3 * df_3pl.loc[d, 'Variable_Handling_Cost']) + (vo * df_3pl.loc[d, 'Owned_Var_Handling'])) / total_v
-                                row = {
-                                    "Year": y, "Supplier": s, "Factory": f, "DC": d, "Region": r, "Units": total_v, "Revenue": total_v * PRICE,
-                                    "RM_Tariff": total_v * df_sup.loc[s, 'RM_Cost'] * 1.2, "Freight_In": total_v * df_f_in.loc[s, f],
-                                    "Freight_Out": total_v * df_f_out.loc[f, d], "DC_Handling": total_v * hand_cost,
-                                    "Last_Mile": total_v * df_last.loc[d, r], "Returns_Leakage": total_v * sim_returns * (df_last.loc[d, r] + sim_refurb)
-                                }
-                                row["Landed_Cost"] = row["RM_Tariff"] + row["Freight_In"] + row["Freight_Out"] + row["DC_Handling"] + row["Last_Mile"] + row["Returns_Leakage"]
-                                row["Contribution_Margin"] = row["Revenue"] - row["Landed_Cost"]
-                                ledger.append(row)
+        st.subheader("Download Fully Burdened Transaction Ledger")
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            pd.DataFrame(ledger).to_excel(writer, sheet_name="Path_Ledger", index=False)
-        st.download_button("📥 Download Perfect Traceability Ledger (.xlsx)", data=output.getvalue(), file_name="CFO_Network_Audit.xlsx")
+            pd.DataFrame(ledger).to_excel(writer, sheet_name="Fully_Burdened_Audit", index=False)
+        st.download_button("📥 Export CFO Master Audit (.xlsx)", data=output.getvalue(), file_name="CFO_Network_ROIC_Audit.xlsx")
+
 else:
-    st.info("👈 Set your strategy and click 'Solve'.")
+    st.info("👈 Select your Corporate Strategy and hit Run to evaluate the Fully Burdened ROIC network.")
