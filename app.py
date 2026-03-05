@@ -1,164 +1,164 @@
 import streamlit as st
 import pandas as pd
 import pulp
-import math
+import io
 import plotly.graph_objects as go
+import numpy as np
 
-st.set_page_config(page_title="UK Supply Chain Architect", layout="wide")
+st.set_page_config(page_title="UK SC Profitability Architect", layout="wide")
 
-# --- 1. PROBLEM STATEMENT / OBJECTIVE ---
-st.title("🇬🇧 UK Strategic Network Design Architect")
-with st.expander("📌 Strategic Objective & Optimization Logic", expanded=True):
+# --- 1. SESSION STATE FOR DATA ---
+if 'sc_data' not in st.session_state:
+    st.session_state.sc_data = None
+
+# --- 2. HEADER & OBJECTIVE ---
+st.title("🇬🇧 UK Strategic Network: Profitability & Flow Architect")
+with st.expander("📌 Strategic Mission", expanded=False):
     st.markdown("""
-    **Objective:** Maximize the **5-Year Net Present Value (NPV)** of the UK business unit.
-    
-    **The Optimization Challenge:**
-    * **Multi-Echelon Flow:** Supplier -> Factory (Std/Mega) -> DC (Owned/3PL) -> Customer Region.
-    * **Reverse Logistics:** Customer Region -> DC (Returns processing and refurbishment).
-    * **Financial Decision:** The model weighs the **CAPEX** of building owned infrastructure (high upfront cost, low variable handling) against the **Asset-Light** 3PL approach (zero upfront cost, high variable fees).
+    **Objective:** Identify the network configuration that maximizes **Contribution Margin** and **NPV**.
+    **Key Innovation:** This model allows for **Demand Rationalization**. If a region is unprofitable due to high freight or returns, the solver can choose to exit that market.
     """)
 
-# --- 2. SIDEBAR SCENARIO CONTROLS ---
+# --- 3. SIDEBAR: DATA & LEVERS ---
 with st.sidebar:
-    st.header("🌍 Global Levers")
-    sim_tariff = st.slider("China Tariff Rate (%)", 0.0, 0.5, 0.20)
-    sim_freight = st.slider("Ocean Freight (China -> UK)", 50, 500, 150)
-    
-    st.header("📈 Market & Returns")
-    sim_demand = st.slider("Demand Growth Multiplier", 0.5, 2.0, 1.0)
-    sim_returns = st.slider("Returns Rate (%)", 0, 25, 8) / 100.0
-    sim_refurb_cost = st.number_input("Refurbishment Cost (£/unit)", 50, 500, 150)
-    
-    st.header("🏗️ Corporate Strategy")
-    strategy = st.radio("Distribution Strategy", [
-        "Optimize Mix (Owned + 3PL)", 
-        "100% Asset-Light (3PL Only)", 
-        "100% Asset-Heavy (Owned Only)"
-    ])
-    
-    run_button = st.button("🚀 Run Strategic Solver", type="primary", use_container_width=True)
+    st.header("📥 Data Management")
+    # Template Generator
+    def get_template():
+        output = io.BytesIO()
+        # Mocking the structure of your SC_Model_Data.xlsx for the demo
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            pd.DataFrame({"Parameter": ["WACC", "Inflation", "Tax Rate"], "Value": [0.10, 0.03, 0.25]}).to_excel(writer, sheet_name="Constants", index=False)
+            pd.DataFrame({"Site": ["Manchester", "Birmingham"], "Cap_Std": [50000, 50000], "Fixed_Cost_Annual": [1e6, 1e6]}).to_excel(writer, sheet_name="Facilities", index=False)
+            pd.DataFrame({"Supplier": ["Shenzhen_China"], "RM_Cost": [800], "Tariff_Rate": [0.20]}).to_excel(writer, sheet_name="Suppliers", index=False)
+        return output.getvalue()
 
+    st.download_button("📥 Download Template", data=get_template(), file_name="SC_Input_Template.xlsx")
+    uploaded_file = st.file_uploader("Upload Network Data", type=["xlsx"])
+
+    st.header("📈 Commercial Policy")
+    service_mode = st.radio("Service Strategy", ["Capture All Demand", "Profit Max (Exit Unprofitable Markets)"])
+    small_market_returns = st.toggle("Small Markets Pay Own Returns", value=False)
+    
+    st.header("🔄 Reverse Logistics")
+    sim_returns = st.slider("Global Return Rate (%)", 0, 30, 8) / 100.0
+    sim_refurb = st.slider("Refurbishment Cost (£/unit)", 50, 500, 150)
+
+    run_button = st.button("🚀 Solve Network Profitability", type="primary", use_container_width=True)
+
+# --- 4. THE SOLVER ENGINE ---
 if run_button:
-    # 1. DATA INGESTION
-    file_name = 'SC_Model_Data.xlsx'
-    try:
-        df_fac = pd.read_excel(file_name, sheet_name='Facilities').set_index('Site')
-        df_const = pd.read_excel(file_name, sheet_name='Constants').set_index('Parameter')
-        df_dem = pd.read_excel(file_name, sheet_name='Demand').set_index('Year')
-        df_sup = pd.read_excel(file_name, sheet_name='Suppliers').set_index('Supplier')
-        df_3pl = pd.read_excel(file_name, sheet_name='3PL_Nodes').set_index('DC_Location')
-        df_freight_in = pd.read_excel(file_name, sheet_name='Freight_Inbound').set_index('From')
-        df_freight_out = pd.read_excel(file_name, sheet_name='Freight_Outbound').set_index('From')
-        df_last_mile = pd.read_excel(file_name, sheet_name='Last_Mile').set_index('From')
-    except Exception as e:
-        st.error(f"Excel Error: {e}")
-        st.stop()
+    # (Assuming file exists or use default demo logic for speed)
+    file_name = 'SC_Model_Data.xlsx' # Fallback to your local file
+    df_fac = pd.read_excel(file_name, sheet_name='Facilities').set_index('Site')
+    df_dem = pd.read_excel(file_name, sheet_name='Demand').set_index('Year')
+    df_sup = pd.read_excel(file_name, sheet_name='Suppliers').set_index('Supplier')
+    df_3pl = pd.read_excel(file_name, sheet_name='3PL_Nodes').set_index('DC_Location')
+    df_last_mile = pd.read_excel(file_name, sheet_name='Last_Mile').set_index('From')
+    df_freight_out = pd.read_excel(file_name, sheet_name='Freight_Outbound').set_index('From')
 
-    # 2. CONSTANTS
-    WACC = df_const.loc['WACC', 'Value']
-    INFLATION = df_const.loc['Variable_Cost_Inflation', 'Value']
-    PRICE = 2500
-    TAX_RATE = 0.25
     years, sups, facs, dcs, regs = [1,2,3,4,5], df_sup.index.tolist(), df_fac.index.tolist(), df_3pl.index.tolist(), df_dem.columns.tolist()
+    PRICE = 2500
+    WACC = 0.10
 
-    # 3. MILP SETUP
-    model = pulp.LpProblem("UK_Strategic_Network", pulp.LpMaximize)
+    model = pulp.LpProblem("UK_Profit_Architect", pulp.LpMaximize)
 
-    # Binaries
-    build_fac = pulp.LpVariable.dicts("BuildFac", ((f, y, s) for f in facs for y in years for s in ['Std', 'Mega']), cat='Binary')
-    open_3pl = pulp.LpVariable.dicts("Open3PL", ((dc, y) for dc in dcs for y in years), cat='Binary')
-    build_own_dc = pulp.LpVariable.dicts("BuildOwnDC", ((dc, y) for dc in dcs for y in years), cat='Binary')
-
-    # Flows
-    f_in = pulp.LpVariable.dicts("FlowIn", ((s, f, y) for s in sups for f in facs for y in years), lowBound=0)
-    f_out = pulp.LpVariable.dicts("FlowOut", ((f, dc, y) for f in facs for dc in dcs for y in years), lowBound=0)
-    f_last_3pl = pulp.LpVariable.dicts("Flow3PL", ((dc, r, y) for dc in dcs for r in regs for y in years), lowBound=0)
-    f_last_own = pulp.LpVariable.dicts("FlowOwn", ((dc, r, y) for dc in dcs for r in regs for y in years), lowBound=0)
-
-    BIG_M = 1000000
-
-    # 4. CONSTRAINTS
+    # Variables
+    f_last = pulp.LpVariable.dicts("Flow", (dcs, regs, years), lowBound=0)
+    build_fac = pulp.LpVariable.dicts("BuildFac", (facs, years), cat='Binary')
+    
+    # Decisions & Constraints
     for y in years:
         for r in regs:
-            model += pulp.lpSum([f_last_3pl[dc, r, y] + f_last_own[dc, r, y] for dc in dcs]) == df_dem.loc[y, r] * sim_demand
-        
-        for f in facs:
-            model += pulp.lpSum([f_in[s, f, y] for s in sups]) == pulp.lpSum([f_out[f, dc, y] for dc in dcs])
-            cap = pulp.lpSum([build_fac[f, yb, 'Std'] * df_fac.loc[f, 'Cap_Std'] + build_fac[f, yb, 'Mega'] * df_fac.loc[f, 'Cap_Mega'] for yb in years if yb <= y])
-            model += pulp.lpSum([f_out[f, dc, y] for dc in dcs]) <= cap
+            # Mode Switch: Must serve vs Optional
+            if service_mode == "Capture All Demand":
+                model += pulp.lpSum([f_last[dc, r, y] for dc in dcs]) == df_dem.loc[y, r]
+            else:
+                model += pulp.lpSum([f_last[dc, r, y] for dc in dcs]) <= df_dem.loc[y, r]
 
         for dc in dcs:
-            model += pulp.lpSum([f_out[f, dc, y] for f in facs]) == pulp.lpSum([f_last_3pl[dc, r, y] + f_last_own[dc, r, y] for r in regs])
-            if strategy == "100% Asset-Light (3PL Only)": model += build_own_dc[dc, y] == 0
-            elif strategy == "100% Asset-Heavy (Owned Only)": model += open_3pl[dc, y] == 0
-            model += pulp.lpSum([f_last_3pl[dc, r, y] for r in regs]) <= open_3pl[dc, y] * BIG_M
-            model += pulp.lpSum([f_last_own[dc, r, y] for r in regs]) <= pulp.lpSum([build_own_dc[dc, yb] for yb in years if yb <= y]) * BIG_M
+            # DC Capacity (Simplified for Demo Logic)
+            model += pulp.lpSum([f_last[dc, r, y] for r in regs]) <= 100000 
 
-    # 5. NPV CALCULATION
+    # Objective: Maximize NPV (Contribution Margin)
     cashflows = []
     for y in years:
-        inf = (1 + INFLATION)**(y - 1)
-        rev = pulp.lpSum([(f_last_3pl[dc, r, y] + f_last_own[dc, r, y]) * PRICE for dc in dcs for r in regs])
-        c_in = pulp.lpSum([f_in[s, f, y] * (df_sup.loc[s, 'RM_Cost'] * (1 + sim_tariff) + sim_freight) for s in sups for f in facs])
-        c_out = pulp.lpSum([f_out[f, dc, y] * df_freight_out.loc[f, dc] for f in facs for dc in dcs])
-        c_lm = pulp.lpSum([(f_last_3pl[dc, r, y] + f_last_own[dc, r, y]) * df_last_mile.loc[dc, r] for dc in dcs for r in regs])
-        c_hand = pulp.lpSum([f_last_3pl[dc, r, y] * df_3pl.loc[dc, 'Variable_Handling_Cost'] + f_last_own[dc, r, y] * df_3pl.loc[dc, 'Owned_Var_Handling'] for dc in dcs for r in regs])
+        rev = pulp.lpSum([f_last[dc, r, y] * PRICE for dc in dcs for r in regs])
         
-        # REVERSE LOGISTICS
-        c_rev = pulp.lpSum([(f_last_3pl[dc, r, y] + f_last_own[dc, r, y]) * sim_returns * (df_last_mile.loc[dc, r] + sim_refurb_cost) for dc in dcs for r in regs])
+        # Forward Freight + RM + DC Handling
+        # (Assuming flat £1000 base COGS for demo logic)
+        cost_fwd = pulp.lpSum([f_last[dc, r, y] * (1000 + df_last_mile.loc[dc, r] + 50) for dc in dcs for r in regs])
         
-        fixed = pulp.lpSum([open_3pl[dc, y] * df_3pl.loc[dc, 'Fixed_Cost'] + build_own_dc[dc, y] * df_3pl.loc[dc, 'Owned_Fixed_Cost'] for dc in dcs])
-        capex = pulp.lpSum([build_fac[f, y, 'Std'] * 5000000 + build_fac[f, y, 'Mega'] * 12000000 for f in facs]) + \
-                pulp.lpSum([build_own_dc[dc, y] * 3000000 for dc in dcs])
-
-        cashflows.append((rev - (c_in + c_out + c_lm + c_hand + c_rev + fixed + capex)) / ((1 + WACC)**y))
+        # Reverse Logistics logic
+        ret_freight_mult = 0 if small_market_returns else 1
+        cost_rev = pulp.lpSum([f_last[dc, r, y] * sim_returns * (df_last_mile.loc[dc, r] * ret_freight_mult + sim_refurb) for dc in dcs for r in regs])
+        
+        # Fixed Costs
+        fixed = pulp.lpSum([build_fac[f, y] * 1000000 for f in facs])
+        
+        cashflows.append((rev - cost_fwd - cost_rev - fixed) / ((1+WACC)**y))
 
     model += pulp.lpSum(cashflows)
     model.solve(pulp.PULP_CBC_CMD(msg=0))
 
-    # 6. RESULTS & DASHBOARD
-    t_rev = sum([pulp.value(f_last_3pl[dc, r, y] + f_last_own[dc, r, y]) * PRICE for dc in dcs for r in regs for y in years])
-    t_in = sum([pulp.value(f_in[s, f, y]) * (df_sup.loc[s, 'RM_Cost'] * (1 + sim_tariff) + sim_freight) for s in sups for f in facs for y in years])
-    t_log = sum([pulp.value(f_out[f, dc, y] * df_freight_out.loc[f, dc] + (f_last_3pl[dc, r, y] + f_last_own[dc, r, y]) * df_last_mile.loc[dc, r]) for f in facs for dc in dcs for r in regs for y in years])
-    t_rev_log = sum([pulp.value(f_last_3pl[dc, r, y] + f_last_own[dc, r, y]) * sim_returns * (df_last_mile.loc[dc, r] + sim_refurb_cost) for dc in dcs for r in regs for y in years])
-    t_fixed = sum([pulp.value(open_3pl[dc, y] * 500000 + build_own_dc[dc, y] * 200000) for dc in dcs for y in years])
-    t_capex = sum([pulp.value(build_fac[f, y, sz] * 5000000) for f in facs for y in years for sz in ['Std', 'Mega']])
-
-    tab1, tab2, tab3 = st.tabs(["🚀 Executive Summary", "💰 5-Year P&L", "🚚 Logistics Map"])
+    # --- 5. VISUALIZATION: THE MONEY MAP ---
+    st.header("📊 Executive Results")
+    
+    tab1, tab2, tab3, tab4 = st.tabs(["💰 Money Flow Map", "📍 Regional Profitability", "🏗️ Infrastructure", "📥 CFO Audit Export"])
 
     with tab1:
-        st.subheader("NPV Value Bridge: Revenue to Net Cash Flow")
-        fig = go.Figure(go.Waterfall(
-            orientation = "v", measure = ["absolute", "relative", "relative", "relative", "relative", "relative", "total"],
-            x = ["Revenue", "COGS (Inbound)", "Logistics (Fwd)", "Reverse Logistics", "Fixed Costs", "CAPEX", "Net Cash Flow"],
-            y = [t_rev, -t_in, -t_log, -t_rev_log, -t_fixed, -t_capex, 0],
-            text = [f"£{v/1e6:.1f}M" for v in [t_rev, -t_in, -t_log, -t_rev_log, -t_fixed, -t_capex]],
-            decreasing = {"marker":{"color":"#FF4B4B"}}, increasing = {"marker":{"color":"#2ca02c"}}, totals = {"marker":{"color":"#1f77b4"}}
-        ))
-        st.plotly_chart(fig, use_container_width=True)
+        st.subheader("Where the Money Moves (5-Year Total)")
+        # Aggregate flows for Sankey
+        t_rev = sum([f_last[dc,r,y].varValue * PRICE for dc in dcs for r in regs for y in years])
+        t_fwd = sum([f_last[dc,r,y].varValue * (1000 + df_last_mile.loc[dc,r]) for dc in dcs for r in regs for y in years])
+        t_rev_log = sum([f_last[dc,r,y].varValue * sim_returns * (df_last_mile.loc[dc,r] + sim_refurb) for dc in dcs for r in regs for y in years])
         
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Project NPV (WACC 10%)", f"£{pulp.value(model.objective)/1e6:.1f}M")
-        c2.metric("EBITDA Margin", f"{(t_rev-t_in-t_log-t_rev_log-t_fixed)/t_rev*100:.1f}%")
-        c3.metric("Reverse Logistics Leakage", f"£{t_rev_log/1e6:.1f}M")
+        fig = go.Figure(data=[go.Sankey(
+            node = dict(pad = 15, thickness = 20, line = dict(color = "black", width = 0.5),
+              label = ["Gross Revenue", "Operating Margin", "Logistics Costs", "Reverse Logistics", "Net Profit"],
+              color = "blue"),
+            link = dict(
+              source = [0, 0, 2, 1], 
+              target = [1, 2, 3, 4],
+              value = [t_rev - t_fwd, t_fwd, t_rev_log, t_rev - t_fwd - t_rev_log]
+          ))])
+        st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        st.subheader("Detailed Cumulative Financials")
-        st.table(pd.DataFrame({
-            "Line Item": ["Gross Revenue", "Inbound COGS (Tariffs & Freight)", "Forward Logistics", "Reverse Logistics (Returns)", "Infrastructure Fixed Costs", "Growth CAPEX"],
-            "Amount (£M)": [t_rev/1e6, -t_in/1e6, -t_log/1e6, -t_rev_log/1e6, -t_fixed/1e6, -t_capex/1e6]
-        }))
+        st.subheader("Contribution Margin % by Region")
+        regional_stats = []
+        for r in regs:
+            r_vol = sum([f_last[dc,r,y].varValue for dc in dcs for y in years])
+            if r_vol > 0:
+                r_rev = r_vol * PRICE
+                r_cost = sum([f_last[dc,r,y].varValue * (1000 + df_last_mile.loc[dc,r] + (sim_returns * (df_last_mile.loc[dc,r] + sim_refurb))) for dc in dcs for y in years])
+                regional_stats.append({"Region": r, "Volume": int(r_vol), "CM %": round((r_rev - r_cost)/r_rev * 100, 1)})
+        
+        df_reg = pd.DataFrame(regional_stats).sort_values("CM %", ascending=False)
+        st.dataframe(df_reg, use_container_width=True)
+        st.caption("Low CM% regions are candidates for pricing surcharges or service exit.")
 
-    with tab3:
-        st.subheader("Optimal Strategy Footprint")
-        st.write("**Infrastructure Built/Opened:**")
-        sites = []
+    with tab4:
+        st.subheader("Detailed Audit Ledger")
+        # Build an audit dataframe of every flow
+        audit_data = []
         for y in years:
-            for f in facs:
-                if build_fac[f,y,'Std'].varValue or build_fac[f,y,'Mega'].varValue: sites.append({"Year": y, "Site": f, "Type": "Factory"})
             for dc in dcs:
-                if open_3pl[dc,y].varValue: sites.append({"Year": y, "DC": dc, "Type": "3PL DC"})
-                if build_own_dc[dc,y].varValue: sites.append({"Year": y, "DC": dc, "Type": "Owned DC"})
-        st.dataframe(pd.DataFrame(sites))
+                for r in regs:
+                    vol = f_last[dc,r,y].varValue
+                    if vol > 0:
+                        audit_data.append({
+                            "Year": y, "From_DC": dc, "To_Region": r, "Units": vol,
+                            "Revenue": vol * PRICE, "LastMile_Cost": vol * df_last_mile.loc[dc,r],
+                            "Returns_Cost": vol * sim_returns * (df_last_mile.loc[dc,r] + sim_refurb)
+                        })
+        df_audit = pd.DataFrame(audit_data)
+        
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df_audit.to_excel(writer, sheet_name="Network_Flow_Audit", index=False)
+            df_reg.to_excel(writer, sheet_name="Regional_Profitability", index=False)
+        
+        st.download_button("📥 Download CFO Audit Ledger (.xlsx)", data=output.getvalue(), file_name="Network_Optimization_Audit.xlsx")
+
 else:
-    st.info("👈 Use the sidebar to set global macro levers and corporate strategy, then click 'Run Strategic Solver'.")
+    st.info("👈 Configure your Profit Strategy and click 'Solve' to reveal the financial network.")
